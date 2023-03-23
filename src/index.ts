@@ -14,7 +14,7 @@ const REIMPORT_TEMPLATE = fs
 const fixRequire = (scope: Scope, lua: string): string => {
   if (lua.length === 0) return '';
   const fix = (fromImport: string): string => {
-    let toImport = fromImport.replaceAll('.', '/');
+    let toImport = fromImport.replace(/\./g, '/');
     // Remove cross-references for client/server/shared.
     if (toImport.startsWith('shared/')) {
       toImport = toImport.substring('shared/'.length);
@@ -52,7 +52,7 @@ const fixRequire = (scope: Scope, lua: string): string => {
       const toImport = fix(fromImport);
       // Kahlua only works with '/', nor '.' in 'require(..)'.
       const from = 'require("' + fromImport + '")';
-      const to = "require('" + toImport.replaceAll('.', '/') + "')";
+      const to = "require('" + toImport.replace(/\./g, '/') + "')";
       lua = lua.replace(from, to);
     }
   } while (index !== -1);
