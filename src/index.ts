@@ -1,10 +1,13 @@
+import * as fs from 'fs-extra';
 import * as ts from 'typescript';
 import * as tstl from 'typescript-to-lua';
-import * as fs from 'fs-extra';
-import path from 'path';
+
 import { existsSync, writeFileSync } from 'fs';
+import { PipeWrenchConfig, PipeWrenchConfigSchema } from './config';
+
 import Ajv from 'ajv';
-import { PipeWrenchConfigSchema, PipeWrenchConfig } from './config';
+import path from 'path';
+
 const ajv = new Ajv();
 type Scope = 'client' | 'server' | 'shared' | 'none';
 const REIMPORT_TEMPLATE = fs
@@ -173,6 +176,12 @@ class PipeWrenchPlugin implements tstl.Plugin {
           this.config.scriptsDir,
           path.join(modSubDir, 'media', 'scripts')
         );
+      if (existsSync(this.config.modInfo.poster)) {
+        fs.copyFileSync(
+          this.config.modInfo.poster,
+          path.join(modSubDir, path.basename(this.config.modInfo.poster))
+        );
+      }
       const modInfoArray = Object.entries(this.config.modInfo).map(
         ([key, value]) => {
           return `${key}=${value}`;
