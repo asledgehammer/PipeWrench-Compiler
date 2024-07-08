@@ -75,21 +75,23 @@ const applyReimportScript = (lua: string): string => {
   const assignments: string[] = [];
   let lines: (string | null)[] = lua.split('\n');
   lines = lines.reverse();
-  lines.push('local __PW__ClassExtends = require(\'pipewrench_fixes\').__PW__ClassExtends');
+  lines.push(
+    "local __PW__ClassExtends = require('pipewrench_fixes').__PW__ClassExtends"
+  );
   lines = lines.reverse();
 
   type t = {
-    name: string,
-    extends: string,
-    functions: string[][]
+    name: string;
+    extends: string;
+    functions: string[][];
   };
 
-  const classes: {[name: string]: t } = {};
+  const classes: { [name: string]: t } = {};
   const classes_array: t[] = [];
 
   // Look for any PipeWrench assignments.
   for (const line of lines) {
-    if(!line) continue;
+    if (!line) continue;
     if (
       line.indexOf('local ') === 0 &&
       line.indexOf('____pipewrench.') !== -1
@@ -97,13 +99,11 @@ const applyReimportScript = (lua: string): string => {
       assignments.push(line.replace('local ', ''));
     }
 
-    if (
-      line.endsWith('__TS__Class()')
-    ) {
+    if (line.endsWith('__TS__Class()')) {
       let name = '';
       let line2 = line.trim();
       // Remove exports reference if needed.
-      if(line2.startsWith('____exports.')) {
+      if (line2.startsWith('____exports.')) {
         line2 = line2.substring('____exports.'.length);
       }
       name = line2.split(' ')[0].trim();
@@ -119,12 +119,12 @@ const applyReimportScript = (lua: string): string => {
   // Name phase.
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
-    if(!line) continue;
+    if (!line) continue;
     if (line.indexOf('.name = ') !== 0) {
       const clazzObjName = line.split('.name = ')[0].trim();
       const clazz = classes[clazzObjName];
-      if(clazz) {
-        clazz.name = line.split('.name = ')[1].replaceAll("\"", '').trim();
+      if (clazz) {
+        clazz.name = line.split('.name = ')[1].replaceAll('"', '').trim();
         lines[index] = null;
       }
     }
@@ -135,41 +135,51 @@ const applyReimportScript = (lua: string): string => {
     const line = lines[index];
     if (!line) continue;
 
-    if(line.indexOf('local __TS__ClassExtends = ____lualib.__TS__ClassExtends') === 0) {
+    if (
+      line.indexOf(
+        'local __TS__ClassExtends = ____lualib.__TS__ClassExtends'
+      ) === 0
+    ) {
       lines[index] = null;
       continue;
     }
 
-    if (
-      line.indexOf('__TS__ClassExtends(') !== -1
-    ) {
+    if (line.indexOf('__TS__ClassExtends(') !== -1) {
       const line2 = line.split('TS__ClassExtends(')[1];
-      const params = line2.split(')')[0].split(',').map((s) => s.trim());
+      const params = line2
+        .split(')')[0]
+        .split(',')
+        .map((s) => s.trim());
       const clazz = classes[params[0]];
-      if(clazz) {
+      if (clazz) {
         lines[index] = null;
         clazz.extends = params[1];
       }
     }
-  } 
+  }
 
   // Functions phase.
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
-    if(!line) continue;
-    if(line.indexOf('.prototype.') !== -1 && line.trim().indexOf('function ') === 0) {
-      
-      const classObjName = line.substring('function '.length).split('.prototype.')[0].trim();
+    if (!line) continue;
+    if (
+      line.indexOf('.prototype.') !== -1 &&
+      line.trim().indexOf('function ') === 0
+    ) {
+      const classObjName = line
+        .substring('function '.length)
+        .split('.prototype.')[0]
+        .trim();
       const clazz = classes[classObjName];
 
-      if(!clazz) continue;
+      if (!clazz) continue;
 
       const startIndex = index;
       let endIndex = startIndex;
 
-      while(index < lines.length - 1) {
+      while (index < lines.length - 1) {
         const line2 = lines[index];
-        if(line2 && line2.indexOf('end') === 0) {
+        if (line2 && line2.indexOf('end') === 0) {
           break;
         }
         index++;
@@ -177,12 +187,12 @@ const applyReimportScript = (lua: string): string => {
       }
 
       const funcLines: string[] = [];
-      for(let index2 = startIndex; index2 <= endIndex; index2++) {
+      for (let index2 = startIndex; index2 <= endIndex; index2++) {
         const line2 = lines[index2];
-        if(line2) funcLines.push(line2);
+        if (line2) funcLines.push(line2);
         lines[index2] = null;
       }
-      
+
       clazz.functions.push(funcLines);
     }
   }
@@ -205,18 +215,16 @@ const applyReimportScript = (lua: string): string => {
 
   let compiledClassCreate = '';
   for (const clazz of Object.values(classes)) {
-
     compiledClassCreate += `  __PW__ClassExtends(${clazz.name}, ${clazz.extends})\n`;
     const superCall = `${clazz.extends}.prototype.____constructor(`;
 
-    for(const func of clazz.functions) {
-
+    for (const func of clazz.functions) {
       let inSuperClass = false;
       for (let fIndex = 0; fIndex < func.length; fIndex++) {
-        let funcLine = func[fIndex];
+        const funcLine = func[fIndex];
 
-        if(inSuperClass) {
-          if(funcLine.startsWith('    )')) {
+        if (inSuperClass) {
+          if (funcLine.startsWith('    )')) {
             compiledClassCreate += `  ${funcLine}\n`;
             compiledClassCreate += `      for key, value in pairs(__o__) do\n`;
             compiledClassCreate += `          self[key] = value\n`;
@@ -224,8 +232,8 @@ const applyReimportScript = (lua: string): string => {
             continue;
           }
         } else {
-          if(funcLine.indexOf(superCall) !== -1) {
-            if(funcLine.indexOf(superCall + ')') !== -1) {
+          if (funcLine.indexOf(superCall) !== -1) {
+            if (funcLine.indexOf(superCall + ')') !== -1) {
               compiledClassCreate += `    local __o__ = ${funcLine.trimStart()})\n`;
               compiledClassCreate += `    for key, value in pairs(__o__) do\n`;
               compiledClassCreate += `        self[key] = value\n`;
@@ -238,11 +246,11 @@ const applyReimportScript = (lua: string): string => {
             }
           }
         }
-        compiledClassCreate += `  ${funcLine}\n`;        
+        compiledClassCreate += `  ${funcLine}\n`;
       }
 
       // Wrap the constructor in an assignment and map it to self.
-      if(func[0].startsWith(`${clazz.extends}.prototype.____constructor(`)) {
+      if (func[0].startsWith(`${clazz.extends}.prototype.____constructor(`)) {
         func[0] = `local __o__ = (${func[0]}`;
         func[func.length - 1] = `${func[func.length - 1]})`;
       }
@@ -254,7 +262,9 @@ const applyReimportScript = (lua: string): string => {
     compiledClassCreate.substring(0, compiledClassCreate.length - 1)
   );
 
-  return `${lines.filter((s: string | null) => s != null).join('\n')}\n${reimports}\n\n${classCreates}\n\n${returnLine}\n`;
+  return `${lines
+    .filter((s: string | null) => s != null)
+    .join('\n')}\n${reimports}\n\n${classCreates}\n\n${returnLine}\n`;
 };
 
 const handleFile = (file: tstl.EmitFile) => {
@@ -349,7 +359,10 @@ class PipeWrenchPlugin implements tstl.Plugin {
           return `${key}=${value}`;
         }
       );
-      writeFileSync(path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'), PIPEWRENCH_FIXES);
+      writeFileSync(
+        path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'),
+        PIPEWRENCH_FIXES
+      );
       writeFileSync(path.join(modSubDir, 'mod.info'), modInfoArray.join('\n'));
       result.map((file) => {
         const { outDir } = options;
