@@ -359,21 +359,6 @@ class PipeWrenchPlugin implements tstl.Plugin {
           return `${key}=${value}`;
         }
       );
-      if (!existsSync(path.join(modSubDir, 'media'))) {
-        mkdirSync(path.join(modSubDir, 'media'));
-      }
-      if (!existsSync(path.join(modSubDir, 'media/lua'))) {
-        mkdirSync(path.join(modSubDir, 'media/lua'));
-      }
-      if (!existsSync(path.join(modSubDir, 'media/lua/shared'))) {
-        mkdirSync(path.join(modSubDir, 'media/lua/shared'));
-      }
-      if (!existsSync(path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'))) {
-        writeFileSync(
-          path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'),
-          PIPEWRENCH_FIXES
-        );
-      }
       writeFileSync(path.join(modSubDir, 'mod.info'), modInfoArray.join('\n'));
       result.map((file) => {
         const { outDir } = options;
@@ -387,6 +372,26 @@ class PipeWrenchPlugin implements tstl.Plugin {
           handleFile(file);
         }
       });
+
+      if (!existsSync(path.join(modSubDir, 'media'))) {
+        mkdirSync(path.join(modSubDir, 'media'));
+      }
+      if (!existsSync(path.join(modSubDir, 'media/lua'))) {
+        mkdirSync(path.join(modSubDir, 'media/lua'));
+      }
+      if (!existsSync(path.join(modSubDir, 'media/lua/shared'))) {
+        mkdirSync(path.join(modSubDir, 'media/lua/shared'));
+      }
+      if (
+        !existsSync(
+          path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua')
+        )
+      ) {
+        writeFileSync(
+          path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'),
+          PIPEWRENCH_FIXES
+        );
+      }
     }
   }
 }
