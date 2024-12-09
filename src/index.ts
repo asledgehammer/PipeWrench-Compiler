@@ -20,10 +20,8 @@ import {
   isIdentifier,
   isStringLiteral,
   isTableIndexExpression,
-  type EmitHost,
   type Expression,
   type FunctionVisitor,
-  type ProcessedFile,
   type Statement,
   type TransformationContext
 } from 'typescript-to-lua';
@@ -32,7 +30,6 @@ import {
   copySync,
   ensureDirSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   writeFileSync
 } from 'fs-extra';
@@ -227,7 +224,6 @@ class PipeWrenchPlugin implements tstl.Plugin {
   constructor() {
     this.validatePzpwConfig();
     this.visitors = {
-      // @ts-ignore
       [ts.SyntaxKind.ClassDeclaration]: this.classDeclarationPatcher,
 
       [ts.SyntaxKind.ClassExpression]: this.ClassExpressionPatcher,
@@ -236,11 +232,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
     };
   }
 
-  beforeTransform(
-    program: ts.Program,
-    options: tstl.CompilerOptions,
-    emitHost: tstl.EmitHost
-  ) {
+  beforeTransform(program: ts.Program, options: tstl.CompilerOptions) {
     if (!options.outDir) {
       throw 'Must specify outDir in tsconfig.json';
     }
@@ -445,13 +437,15 @@ class PipeWrenchPlugin implements tstl.Plugin {
     return result;
   };
 
-  // @ts-ignore
   classDeclarationPatcher: tstl.Visitor<ts.ClassDeclaration> = (
     declaration,
     context
   ) => {
     const { patchPzClass } = this;
-    const result = transformClassDeclaration(declaration, context);
+    const result = transformClassDeclaration(
+      declaration,
+      context
+    ) as OneToManyVisitorResult<Statement>;
     return patchPzClass(declaration, context, result);
   };
 
