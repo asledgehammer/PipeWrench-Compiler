@@ -20,10 +20,8 @@ import {
   isIdentifier,
   isStringLiteral,
   isTableIndexExpression,
-  type EmitHost,
   type Expression,
   type FunctionVisitor,
-  type ProcessedFile,
   type Statement,
   type TransformationContext
 } from 'typescript-to-lua';
@@ -32,7 +30,6 @@ import {
   copySync,
   ensureDirSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   writeFileSync
 } from 'fs-extra';
@@ -235,11 +232,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
     };
   }
 
-  beforeTransform(
-    program: ts.Program,
-    options: tstl.CompilerOptions,
-    emitHost: tstl.EmitHost
-  ) {
+  beforeTransform(program: ts.Program, options: tstl.CompilerOptions) {
     if (!options.outDir) {
       throw 'Must specify outDir in tsconfig.json';
     }
