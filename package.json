@@ -18,9 +18,7 @@
   "files": [
     "dist/index.js",
     "dist/config.js",
-    "lua/reimport_template.lua",
-    "lua/pipewrench_fixes.lua",
-    "lua/classcreate_template.lua"
+    "lua/pipewrench_fixes.lua"
   ],
   "exports": "./dist/index.js",
   "types": "./dist/index.d.ts",

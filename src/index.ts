@@ -1,26 +1,144 @@
-import * as fs from 'fs-extra';
 import * as ts from 'typescript';
 import * as tstl from 'typescript-to-lua';
+import {
+  transformClassAsExpression,
+  transformClassDeclaration
+} from 'typescript-to-lua/dist/transformation/visitors/class';
+import { transformIdentifier } from 'typescript-to-lua/dist/transformation/visitors/identifier';
+import { transformSourceFileNode } from 'typescript-to-lua/dist/transformation/visitors/sourceFile';
+import {
+  getExtendedNode,
+  getExtendedType
+} from 'typescript-to-lua/dist/transformation/visitors/class/utils';
+import * as lua from 'typescript-to-lua/dist/LuaAST';
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { PipeWrenchConfig, PipeWrenchConfigSchema } from './config';
+import { sep, join, basename, relative, parse } from 'node:path';
+import {
+  isAssignmentStatement,
+  isCallExpression,
+  isExpressionStatement,
+  isIdentifier,
+  isStringLiteral,
+  isTableIndexExpression,
+  type EmitHost,
+  type Expression,
+  type FunctionVisitor,
+  type ProcessedFile,
+  type Statement,
+  type TransformationContext
+} from 'typescript-to-lua';
+import {
+  copyFileSync,
+  copySync,
+  ensureDirSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync
+} from 'fs-extra';
+import type { ClassLikeDeclaration } from 'typescript';
+import type { OneToManyVisitorResult } from 'typescript-to-lua/dist/transformation/utils/lua-ast';
 
 import Ajv from 'ajv';
-import path from 'path';
+import { PipeWrenchConfigSchema, type PipeWrenchConfig } from './config';
 
 const ajv = new Ajv();
+
 type Scope = 'client' | 'server' | 'shared' | 'none';
-const REIMPORT_TEMPLATE = fs
-  .readFileSync(path.join(__dirname, '../lua/reimport_template.lua'))
-  .toString();
 
-const CLASSCREATE_TEMPLATE = fs
-  .readFileSync(path.join(__dirname, '../lua/classcreate_template.lua'))
-  .toString();
+const pzpwPatchFileName = `pipewrench_fixes`;
 
-const PIPEWRENCH_FIXES = fs
-  .readFileSync(path.join(__dirname, '../lua/pipewrench_fixes.lua'))
-  .toString();
+const getClassName = (
+  classDeclaration: ts.ClassLikeDeclaration,
+  context: TransformationContext
+) => {
+  let className: lua.Identifier;
+  if (classDeclaration.name !== undefined) {
+    className = transformIdentifier(context, classDeclaration.name);
+  } else {
+    className = lua.createIdentifier(
+      context.createTempName('class'),
+      classDeclaration
+    );
+  }
+  return className.text;
+};
+
+const createSimpleCallStatement = (
+  funcName: string,
+  params: (string | Expression)[]
+) =>
+  lua.createExpressionStatement(
+    lua.createCallExpression(
+      lua.createIdentifier(funcName),
+      params.map((param) =>
+        typeof param === 'string' ? lua.createIdentifier(param) : param
+      )
+    )
+  );
+
+const transformSimpleLibFunction = (
+  libFeatures: Set<string>,
+  funcName: string,
+  params: (string | Expression)[]
+) => {
+  libFeatures.add(funcName);
+  return createSimpleCallStatement(funcName, params);
+};
+
+const getClassNameAssignStatementIndex = (result: Statement[]) =>
+  result.findIndex((st) => {
+    if (isAssignmentStatement(st)) {
+      const left = st.left?.[0];
+      const right = st.right?.[0];
+      if (
+        isTableIndexExpression(left) &&
+        isStringLiteral(left.index) &&
+        left.index.value === 'name' &&
+        isStringLiteral(right)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+const getClassExtendsStatementIndex = (result: Statement[]) =>
+  result.findIndex((st) => {
+    if (
+      isExpressionStatement(st) &&
+      isCallExpression(st.expression) &&
+      isIdentifier(st.expression.expression) &&
+      st.expression.expression.text === '__TS__ClassExtends'
+    ) {
+      return true;
+    }
+    return false;
+  });
+
+const createRequireStatement = (source: string, varName: string) => {
+  return lua.createVariableDeclarationStatement(
+    lua.createIdentifier(varName),
+    lua.createCallExpression(lua.createIdentifier(`require`), [
+      lua.createStringLiteral(source)
+    ])
+  );
+};
+
+const createDeclareStatement = (varName: string, fromName: string) => {
+  return lua.createVariableDeclarationStatement(
+    lua.createIdentifier(varName),
+    lua.createTableIndexExpression(
+      lua.createIdentifier(fromName),
+      lua.createStringLiteral(varName)
+    )
+  );
+};
+
+const copyMake = (src: string, dest: string) => {
+  ensureDirSync(dest);
+  copySync(src, dest, { recursive: true });
+};
 
 const fixRequire = (scope: Scope, lua: string): string => {
   if (lua.length === 0) return '';
@@ -71,216 +189,23 @@ const fixRequire = (scope: Scope, lua: string): string => {
   return lua;
 };
 
-const applyReimportScript = (lua: string): string => {
-  const assignments: string[] = [];
-  let lines: (string | null)[] = lua.split('\n');
-  lines = lines.reverse();
-  lines.push(
-    "local __PW__ClassExtends = require('pipewrench_fixes').__PW__ClassExtends"
-  );
-  lines = lines.reverse();
-
-  type t = {
-    name: string;
-    extends: string;
-    functions: string[][];
-  };
-
-  const classes: { [name: string]: t } = {};
-  const classes_array: t[] = [];
-
-  // Look for any PipeWrench assignments.
-  for (const line of lines) {
-    if (!line) continue;
-    if (
-      line.indexOf('local ') === 0 &&
-      line.indexOf('____pipewrench.') !== -1
-    ) {
-      assignments.push(line.replace('local ', ''));
-    }
-
-    if (line.endsWith('__TS__Class()')) {
-      let name = '';
-      let line2 = line.trim();
-      // Remove exports reference if needed.
-      if (line2.startsWith('____exports.')) {
-        line2 = line2.substring('____exports.'.length);
-      }
-      name = line2.split(' ')[0].trim();
-      classes[name] = {
-        name: '',
-        extends: '',
-        functions: []
-      };
-      classes_array.push(classes[name]);
-    }
-  }
-
-  // Name phase.
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (!line) continue;
-    if (line.indexOf('.name = ') !== 0) {
-      const clazzObjName = line.split('.name = ')[0].trim();
-      const clazz = classes[clazzObjName];
-      if (clazz) {
-        clazz.name = line.split('.name = ')[1].replaceAll('"', '').trim();
-        lines[index] = null;
-      }
-    }
-  }
-
-  // Extends phase.
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (!line) continue;
-
-    if (
-      line.indexOf(
-        'local __TS__ClassExtends = ____lualib.__TS__ClassExtends'
-      ) === 0
-    ) {
-      lines[index] = null;
-      continue;
-    }
-
-    if (line.indexOf('__TS__ClassExtends(') !== -1) {
-      const line2 = line.split('TS__ClassExtends(')[1];
-      const params = line2
-        .split(')')[0]
-        .split(',')
-        .map((s) => s.trim());
-      const clazz = classes[params[0]];
-      if (clazz) {
-        lines[index] = null;
-        clazz.extends = params[1];
-      }
-    }
-  }
-
-  // Functions phase.
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (!line) continue;
-    if (
-      line.indexOf('.prototype.') !== -1 &&
-      line.trim().indexOf('function ') === 0
-    ) {
-      const classObjName = line
-        .substring('function '.length)
-        .split('.prototype.')[0]
-        .trim();
-      const clazz = classes[classObjName];
-
-      if (!clazz) continue;
-
-      const startIndex = index;
-      let endIndex = startIndex;
-
-      while (index < lines.length - 1) {
-        const line2 = lines[index];
-        if (line2 && line2.indexOf('end') === 0) {
-          break;
-        }
-        index++;
-        endIndex = index;
-      }
-
-      const funcLines: string[] = [];
-      for (let index2 = startIndex; index2 <= endIndex; index2++) {
-        const line2 = lines[index2];
-        if (line2) funcLines.push(line2);
-        lines[index2] = null;
-      }
-
-      clazz.functions.push(funcLines);
-    }
-  }
-
-  // Only generate a reimport codeblock if there's anything to import.
-  if (!assignments.length) return lua;
-
-  // Take out the returns statement so we can insert before it.
-  lines.pop();
-  const returnLine: string = lines.pop() as string;
-  lines.push('');
-
-  // Build the reimport event.
-  let compiledImports = '';
-  for (const assignment of assignments) compiledImports += `${assignment}\n`;
-  const reimports = REIMPORT_TEMPLATE.replace(
-    '-- {IMPORTS}',
-    compiledImports.substring(0, compiledImports.length - 1)
-  );
-
-  let compiledClassCreate = '';
-  for (const clazz of Object.values(classes)) {
-    compiledClassCreate += `  __PW__ClassExtends(${clazz.name}, ${clazz.extends})\n`;
-    const superCall = `${clazz.extends}.prototype.____constructor(`;
-
-    for (const func of clazz.functions) {
-      let inSuperClass = false;
-      for (let fIndex = 0; fIndex < func.length; fIndex++) {
-        const funcLine = func[fIndex];
-
-        if (inSuperClass) {
-          if (funcLine.startsWith('    )')) {
-            compiledClassCreate += `  ${funcLine}\n`;
-            compiledClassCreate += `      for key, value in pairs(__o__) do\n`;
-            compiledClassCreate += `          self[key] = value\n`;
-            compiledClassCreate += '      end\n';
-            continue;
-          }
-        } else {
-          if (funcLine.indexOf(superCall) !== -1) {
-            if (funcLine.indexOf(superCall + ')') !== -1) {
-              compiledClassCreate += `    local __o__ = ${funcLine.trimStart()})\n`;
-              compiledClassCreate += `    for key, value in pairs(__o__) do\n`;
-              compiledClassCreate += `        self[key] = value\n`;
-              compiledClassCreate += '    end\n';
-              continue;
-            } else {
-              compiledClassCreate += `      local __o__ = ${funcLine.trimStart()}\n`;
-              inSuperClass = true;
-              continue;
-            }
-          }
-        }
-        compiledClassCreate += `  ${funcLine}\n`;
-      }
-
-      // Wrap the constructor in an assignment and map it to self.
-      if (func[0].startsWith(`${clazz.extends}.prototype.____constructor(`)) {
-        func[0] = `local __o__ = (${func[0]}`;
-        func[func.length - 1] = `${func[func.length - 1]})`;
-      }
-    }
-  }
-
-  const classCreates = CLASSCREATE_TEMPLATE.replace(
-    '-- {CLASSES}',
-    compiledClassCreate.substring(0, compiledClassCreate.length - 1)
-  );
-
-  return `${lines
-    .filter((s: string | null) => s != null)
-    .join('\n')}\n${reimports}\n\n${classCreates}\n\n${returnLine}\n`;
-};
-
 const handleFile = (file: tstl.EmitFile) => {
   if (file.code.length === 0) return;
   let scope: Scope = 'none';
-  const fp = path.parse(file.outputPath);
+  const fp = parse(file.outputPath);
   if (fp.dir.indexOf('client')) scope = 'client';
   else if (fp.dir.indexOf('server')) scope = 'server';
   else if (fp.dir.indexOf('shared')) scope = 'shared';
   const split = fp.dir.split('lua_modules');
   const isLuaModule = split.length > 1;
   if (fp.name === 'lualib_bundle') {
-    file.outputPath = path.join(fp.dir, 'shared/lualib_bundle.lua');
+    file.outputPath = join(fp.dir, 'shared/lualib_bundle.lua');
+  }
+  if (fp.name === pzpwPatchFileName) {
+    file.outputPath = join(fp.dir, `shared/${pzpwPatchFileName}.lua`);
   }
   if (isLuaModule) {
-    file.outputPath = path.join(
+    file.outputPath = join(
       split[0],
       'shared',
       'lua_modules',
@@ -288,29 +213,30 @@ const handleFile = (file: tstl.EmitFile) => {
       fp.base
     );
   }
-  file.code = applyReimportScript(fixRequire(scope, file.code));
-};
-const copyMake = (src: string, dest: string) => {
-  fs.ensureDirSync(dest);
-  fs.copySync(src, dest, { recursive: true });
+  file.code = fixRequire(scope, file.code);
 };
 
 class PipeWrenchPlugin implements tstl.Plugin {
-  config: PipeWrenchConfig;
-  constructor() {
-    const validateConfig = ajv.compile(PipeWrenchConfigSchema);
+  visitors: tstl.Visitors;
 
-    const rawdata = fs.readFileSync('./pipewrench.json');
-    const rawConfig = JSON.parse(rawdata.toString());
-    if (validateConfig(rawConfig)) {
-      this.config = rawConfig;
-      console.log('Configuration:', this.config);
-    } else {
-      console.error(validateConfig.errors);
-      throw 'Error parsing pipewrench.json';
-    }
+  /** The function names that needs to be imported from pipewonch_fixes.lua */
+  libFeatures: Set<string> = new Set();
+
+  config!: PipeWrenchConfig;
+
+  constructor() {
+    this.validatePzpwConfig();
+    this.visitors = {
+      // @ts-ignore
+      [ts.SyntaxKind.ClassDeclaration]: this.classDeclarationPatcher,
+
+      [ts.SyntaxKind.ClassExpression]: this.ClassExpressionPatcher,
+
+      [ts.SyntaxKind.SourceFile]: this.SourceFilePatcher
+    };
   }
-  public beforeTransform(
+
+  beforeTransform(
     program: ts.Program,
     options: tstl.CompilerOptions,
     emitHost: tstl.EmitHost
@@ -327,74 +253,265 @@ class PipeWrenchPlugin implements tstl.Plugin {
     emitHost: tstl.EmitHost,
     result: tstl.EmitFile[]
   ) {
-    if (options.outDir) {
-      const modSubDir = path.join(options.outDir, this.config.modInfo.id);
-      fs.ensureDirSync(modSubDir);
+    const { outDir } = options;
+    if (!outDir) {
+      return;
+    }
+    const modSubDir = join(outDir, this.config.modInfo.id);
+    ensureDirSync(modSubDir);
 
-      if (existsSync(this.config.modelsDir))
-        copyMake(
-          this.config.modelsDir,
-          path.join(modSubDir, 'media', 'models')
-        );
-      if (existsSync(this.config.texturesDir))
-        copyMake(
-          this.config.texturesDir,
-          path.join(modSubDir, 'media', 'textures')
-        );
-      if (existsSync(this.config.soundDir))
-        copyMake(this.config.soundDir, path.join(modSubDir, 'media', 'sound'));
-      if (existsSync(this.config.scriptsDir))
-        copyMake(
-          this.config.scriptsDir,
-          path.join(modSubDir, 'media', 'scripts')
-        );
-      if (existsSync(this.config.modInfo.poster)) {
-        fs.copyFileSync(
-          this.config.modInfo.poster,
-          path.join(modSubDir, path.basename(this.config.modInfo.poster))
-        );
+    const copyDirs = [
+      {
+        src: this.config.modelsDir,
+        dest: join(modSubDir, 'media', 'models')
+      },
+      {
+        src: this.config.texturesDir,
+        dest: join(modSubDir, 'media', 'textures')
+      },
+      {
+        src: this.config.soundDir,
+        dest: join(modSubDir, 'media', 'sound')
+      },
+      {
+        src: this.config.scriptsDir,
+        dest: join(modSubDir, 'media', 'scripts')
+      },
+      {
+        src: this.config.modInfo.poster,
+        dest: join(modSubDir, basename(this.config.modInfo.poster)),
+        isFile: true
       }
-      const modInfoArray = Object.entries(this.config.modInfo).map(
-        ([key, value]) => {
-          return `${key}=${value}`;
+    ];
+    copyDirs.forEach(({ src, dest, isFile }) => {
+      if (src && existsSync(src)) {
+        if (isFile) {
+          copyFileSync(src, dest);
+        } else {
+          copyMake(src, dest);
         }
+      }
+    });
+
+    const modInfoArray = Object.entries(this.config.modInfo).map(
+      ([key, value]) => `${key}=${value}`
+    );
+    writeFileSync(join(modSubDir, 'mod.info'), modInfoArray.join('\n'));
+
+    result.forEach((file) => {
+      // file
+      file.outputPath = join(
+        modSubDir,
+        'media',
+        'lua',
+        relative(outDir, file.outputPath)
       );
-      writeFileSync(path.join(modSubDir, 'mod.info'), modInfoArray.join('\n'));
-      result.map((file) => {
-        const { outDir } = options;
-        if (outDir) {
-          file.outputPath = path.join(
-            modSubDir,
-            'media',
-            'lua',
-            path.relative(outDir, file.outputPath)
-          );
-          handleFile(file);
-        }
-      });
+      handleFile(file);
+    });
+  }
 
-      if (!existsSync(path.join(modSubDir, 'media'))) {
-        mkdirSync(path.join(modSubDir, 'media'));
+  validatePzpwConfig() {
+    // provide json schemas for pipewrench.json?
+    const validateConfig = ajv.compile(PipeWrenchConfigSchema);
+
+    const rawData = readFileSync(join(process.cwd(), './pipewrench.json'));
+    const rawConfig = JSON.parse(rawData.toString());
+    if (validateConfig(rawConfig)) {
+      this.config = rawConfig;
+      console.log('Configuration:', this.config);
+    } else {
+      console.error(validateConfig.errors);
+      throw 'Error parsing pipewrench.json';
+    }
+  }
+
+  moduleResolution(
+    moduleIdentifier: string,
+    requiringFile: string,
+    options: tstl.CompilerOptions,
+    emitHost: tstl.EmitHost
+  ) {
+    // add pipewrench_fixes.lua into lua files
+    const { fileExists: originFileExists, readFile: originReadFile } = emitHost;
+    emitHost.fileExists = (filePath: string) => {
+      if (this.isPzpwPatchImport(filePath)) {
+        return true;
       }
-      if (!existsSync(path.join(modSubDir, 'media/lua'))) {
-        mkdirSync(path.join(modSubDir, 'media/lua'));
+      return originFileExists(filePath);
+    };
+    emitHost.readFile = (filePath: string) => {
+      if (this.isPzpwPatchImport(filePath)) {
+        return this.getPzpwFixesContent();
       }
-      if (!existsSync(path.join(modSubDir, 'media/lua/shared'))) {
-        mkdirSync(path.join(modSubDir, 'media/lua/shared'));
+      return originReadFile(filePath);
+    };
+
+    // import pipewrench_fixes from top dir
+    if (moduleIdentifier === pzpwPatchFileName) {
+      return pzpwPatchFileName;
+    }
+    return void 0;
+  }
+
+  /**
+   * patch class like this:
+   *
+   * ```typescript
+   * class A {}
+   * const CB = class B {}
+   * class B extends A {}
+   * export default class D {}
+   * ```
+   *
+   * but notice, this example may has problem because it is anonymous,
+   * and its name and Type is 'default', may same to other classes
+   *
+   * ```typescript
+   * export default class {}
+   * ```
+   */
+  patchPzClass = <T = Expression | OneToManyVisitorResult<Statement>>(
+    declaration: ClassLikeDeclaration,
+    context: TransformationContext,
+    result: T
+  ) => {
+    // Reference from typescript-to-lua
+    // src/transformation/visitors/class/setup.ts
+    if (!Array.isArray(result)) {
+      return result;
+    }
+    const { libFeatures } = this;
+    // find `ClassName.name = className`
+    const classNameAssignStatementIndex =
+      getClassNameAssignStatementIndex(result);
+
+    const className = getClassName(declaration, context);
+
+    // add `__PW__ClassPatch(className)`
+    if (classNameAssignStatementIndex > -1) {
+      // create `__PW__ClassPatch(className)` statement
+      const pwClassPatchStatement = transformSimpleLibFunction(
+        libFeatures,
+        `__PW__ClassPatch`,
+        [className]
+      );
+      // add after `ClassName.name = className`
+      result.splice(
+        classNameAssignStatementIndex + 1,
+        0,
+        pwClassPatchStatement
+      );
+    }
+
+    // handle class extends
+    const extendedType = getExtendedType(context, declaration);
+    if (extendedType) {
+      // find `__TS__ClassExtends(className, baseClassName)`
+      const classExtendsStatementIndex = getClassExtendsStatementIndex(result);
+      // add `__PW__ClassExtendsPatch(className, baseClassName)`
+      if (classExtendsStatementIndex > -1) {
+        // create `__PW__ClassExtendsPatch(Pz2PzpwClass, PzpwClass)` statement
+        const extendedNode = getExtendedNode(declaration)!;
+        const pwClassExtendsPatchStatement = transformSimpleLibFunction(
+          libFeatures,
+          `__PW__ClassExtendsPatch`,
+          [className, context.transformExpression(extendedNode.expression)]
+        );
+        // add before __TS__ClassExtends
+        result.splice(
+          classExtendsStatementIndex,
+          0,
+          pwClassExtendsPatchStatement
+        );
       }
-      if (
-        !existsSync(
-          path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua')
-        )
-      ) {
-        writeFileSync(
-          path.join(modSubDir, 'media/lua/shared/pipewrench_fixes.lua'),
-          PIPEWRENCH_FIXES
+    } else {
+      // add `__PW__BaseClassExtends(PzpwClass)`
+      if (classNameAssignStatementIndex > -1) {
+        // create `__PW__BaseClassExtends(PzpwClass)` statement
+        const pwBaseClassExtendsStatement = transformSimpleLibFunction(
+          libFeatures,
+          `__PW__BaseClassExtends`,
+          [className]
+        );
+        // add after __PW__ClassPatch
+        result.splice(
+          classNameAssignStatementIndex + 2,
+          0,
+          pwBaseClassExtendsStatement
         );
       }
     }
+
+    return result;
+  };
+
+  // @ts-ignore
+  classDeclarationPatcher: tstl.Visitor<ts.ClassDeclaration> = (
+    declaration,
+    context
+  ) => {
+    const { patchPzClass } = this;
+    const result = transformClassDeclaration(declaration, context);
+    return patchPzClass(declaration, context, result);
+  };
+
+  ClassExpressionPatcher: tstl.Visitor<ts.ClassExpression> = (
+    declaration,
+    context
+  ) => {
+    const { patchPzClass } = this;
+    // Temporarily intercept calls to execute patch
+    const { addPrecedingStatements: originAddPrecedingStatements } = context;
+    context.addPrecedingStatements = function (
+      statements: Statement | Statement[]
+    ) {
+      const result = patchPzClass(declaration, context, statements);
+      originAddPrecedingStatements.call(context, result);
+      context.addPrecedingStatements = originAddPrecedingStatements;
+    };
+
+    return transformClassAsExpression(declaration, context);
+  };
+
+  SourceFilePatcher: FunctionVisitor<ts.SourceFile> = (node, context) => {
+    const { libFeatures } = this;
+    const result = transformSourceFileNode(node, context);
+    // `pipewrench_fixes`
+    if (Array.isArray(result.statements)) {
+      const pzpwFixVarName = `____pipewrench_fixes`;
+      result.statements.unshift(
+        // local ____pipewrench_fixes = require("pipewrench_fixes")
+        createRequireStatement(
+          relative(
+            node.fileName,
+            join(context.options.rootDir!, `${pzpwPatchFileName}.lua`)
+          )
+            .replaceAll('\\', '/')
+            .replace(/\.lua$/, ''),
+          pzpwFixVarName
+        ),
+        ...[...libFeatures].map((future) =>
+          // local __PW__Xxx = ____pipewrench_fixes.__PW__Xxx
+          createDeclareStatement(future, pzpwFixVarName)
+        )
+      );
+    }
+    return result;
+  };
+
+  getPzpwFixesPath() {
+    return join(__dirname, `../lua/${pzpwPatchFileName}.lua`);
+  }
+
+  getPzpwFixesContent() {
+    return readFileSync(this.getPzpwFixesPath(), 'utf-8');
+  }
+
+  isPzpwPatchImport(filePath: string) {
+    return filePath.endsWith(`${sep}${pzpwPatchFileName}.lua`);
   }
 }
 
 const plugin = new PipeWrenchPlugin();
+
 export default plugin;
