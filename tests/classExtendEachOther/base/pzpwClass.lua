@@ -1,5 +1,5 @@
 local ____lualib = require('tests/classExtendEachOther/base/lualib_bundle')
-local ____pipewrench_fixes = require('lua/pipewrench_fixes')
+local ____pipewrench_fixes = require('tests/classExtendEachOther/base/pipewrench_fixes')
 local __TS__Class = ____lualib.__TS__Class
 local __PW__ClassPatch = ____pipewrench_fixes.__PW__ClassPatch
 local __PW__BaseClassExtends = ____pipewrench_fixes.__PW__BaseClassExtends
