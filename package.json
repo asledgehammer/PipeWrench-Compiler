@@ -1,6 +1,6 @@
 {
   "name": "@asledgehammer/tstl-pipewrench",
-  "version": "0.0.21",
+  "version": "41.78.1-6.1",
   "license": "MIT",
   "main": "./dist/index.js",
   "dependencies": {
