@@ -12,7 +12,7 @@ import {
 } from 'typescript-to-lua/dist/transformation/visitors/class/utils';
 import * as lua from 'typescript-to-lua/dist/LuaAST';
 
-import { sep, join, basename, relative, parse } from 'node:path';
+import path, { sep, join, basename, relative, parse } from 'node:path';
 import {
   isAssignmentStatement,
   isCallExpression,
@@ -20,9 +20,11 @@ import {
   isIdentifier,
   isStringLiteral,
   isTableIndexExpression,
+  type AssignmentStatement,
   type Expression,
   type FunctionVisitor,
   type Statement,
+  type TableIndexExpression,
   type TransformationContext
 } from 'typescript-to-lua';
 import {
@@ -30,11 +32,13 @@ import {
   copySync,
   ensureDirSync,
   existsSync,
+  pathExistsSync,
   readFileSync,
   writeFileSync
 } from 'fs-extra';
 import type { ClassLikeDeclaration } from 'typescript';
 import type { OneToManyVisitorResult } from 'typescript-to-lua/dist/transformation/utils/lua-ast';
+import { ResolutionContext, ModuleMapping } from './moduleResolve';
 
 import Ajv from 'ajv';
 import { PipeWrenchConfigSchema, type PipeWrenchConfig } from './config';
@@ -42,6 +46,22 @@ import { PipeWrenchConfigSchema, type PipeWrenchConfig } from './config';
 const ajv = new Ajv();
 
 type Scope = 'client' | 'server' | 'shared' | 'none';
+
+interface PipeWrenchLibraryConfig {
+  client?: string;
+  server?: string;
+}
+
+/**
+ * when CompilerOptions.luaBundle === undefined && CompilerOptions.luaBundleEntry === undefined,
+ * fileName is exist
+ */
+type TSTLEmitFile = tstl.EmitFile & { fileName?: string };
+
+interface ImportModuleConfig extends ModuleMapping {
+  packageRoot: string;
+  config: PipeWrenchLibraryConfig;
+}
 
 const pzpwPatchFileName = `pipewrench_fixes`;
 
@@ -193,7 +213,8 @@ const handleFile = (file: tstl.EmitFile) => {
   if (fp.dir.indexOf('client')) scope = 'client';
   else if (fp.dir.indexOf('server')) scope = 'server';
   else if (fp.dir.indexOf('shared')) scope = 'shared';
-  const split = fp.dir.split('lua_modules');
+  // temporary solution
+  const split = fp.dir.split(`lua${path.sep}lua_modules`);
   const isLuaModule = split.length > 1;
   if (fp.name === 'lualib_bundle') {
     file.outputPath = join(fp.dir, 'shared/lualib_bundle.lua');
@@ -204,6 +225,7 @@ const handleFile = (file: tstl.EmitFile) => {
   if (isLuaModule) {
     file.outputPath = join(
       split[0],
+      'lua',
       'shared',
       'lua_modules',
       ...split.slice(1),
@@ -213,6 +235,42 @@ const handleFile = (file: tstl.EmitFile) => {
   file.code = fixRequire(scope, file.code);
 };
 
+/**
+ * config path should be like this: 'client'
+ * convert './client' and 'client.d.ts' and 'client.lua' to 'client'
+ */
+const normalizeSideConfigPath = (filePath: string) => {
+  return filePath
+    .trim()
+    .replace(/\.d\.ts$/, '')
+    .replace(/\.lua$/, '')
+    .replace(/^\.?\//, '');
+};
+
+const isPackageRoot = (packageRoot: string) => {
+  try {
+    if (!pathExistsSync(packageRoot)) {
+      return false;
+    }
+    const packageJsonPath = join(packageRoot, 'package.json');
+    return pathExistsSync(packageJsonPath);
+  } catch (error) {
+    return false;
+  }
+};
+
+const findPackageRootInPath = (requiringFile: string) => {
+  const requiringFileDir = path.dirname(requiringFile);
+  const splitPath = path.normalize(requiringFileDir).split(path.sep);
+  for (let i = splitPath.length; i > 0; i--) {
+    const packageRoot = splitPath.slice(0, i).join(path.sep);
+    const pathIsPackageRoot = isPackageRoot(packageRoot);
+    if (pathIsPackageRoot) {
+      return packageRoot;
+    }
+  }
+};
+
 class PipeWrenchPlugin implements tstl.Plugin {
   visitors: tstl.Visitors;
 
@@ -220,6 +278,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
   libFeatures: Set<string> = new Set();
 
   config!: PipeWrenchConfig;
+  importModuleConfig: ImportModuleConfig[] = [];
 
   constructor() {
     this.validatePzpwConfig();
@@ -236,7 +295,21 @@ class PipeWrenchPlugin implements tstl.Plugin {
     if (!options.outDir) {
       throw 'Must specify outDir in tsconfig.json';
     }
+    if (options.luaBundle && options.luaBundleEntry) {
+      throw new Error(
+        `[tsconfig.json]tstl.luaBundle and tstl.luaBundleEntry could not exist simultaneously`
+      );
+    }
     return;
+  }
+
+  afterPrint(
+    program: ts.Program,
+    options: tstl.CompilerOptions,
+    emitHost: tstl.EmitHost,
+    result: tstl.ProcessedFile[]
+  ) {
+    this.collectImportModuleConfig(program, options, emitHost, result);
   }
 
   beforeEmit(
@@ -249,6 +322,13 @@ class PipeWrenchPlugin implements tstl.Plugin {
     if (!outDir) {
       return;
     }
+    this.patchLuaBundleForPz(result, options.outDir as string);
+    this.moveServerAndClientFiles(
+      program,
+      options,
+      emitHost,
+      result as TSTLEmitFile[]
+    );
     const modSubDir = join(outDir, this.config.modInfo.id);
     ensureDirSync(modSubDir);
 
@@ -346,6 +426,28 @@ class PipeWrenchPlugin implements tstl.Plugin {
   }
 
   /**
+   * replace `ClassName.name = className` to `ClassName.Type = className` in statement
+   *
+   * Because in vanilla code, the name field is occupied
+   */
+  replaceStatementClassNameFieldToType(result: Statement[]) {
+    // find `ClassName.name = className`
+    const classNameAssignStatementIndex =
+      getClassNameAssignStatementIndex(result);
+    if (classNameAssignStatementIndex === -1) {
+      return;
+    }
+    const classNameAssignStatement = result[
+      classNameAssignStatementIndex
+    ] as AssignmentStatement;
+    const assignStatementLeft = classNameAssignStatement
+      .left[0] as TableIndexExpression;
+    const assignStatementLeftIndex =
+      assignStatementLeft.index as lua.StringLiteral;
+    assignStatementLeftIndex.value = 'Type';
+  }
+
+  /**
    * patch class like this:
    *
    * ```typescript
@@ -354,6 +456,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
    * class B extends A {}
    * export default class D {}
    * ```
+   * and replace `ClassName.name = className` to `ClassName.Type = className` in statement
    *
    * but notice, this example may has problem because it is anonymous,
    * and its name and Type is 'default', may same to other classes
@@ -378,22 +481,6 @@ class PipeWrenchPlugin implements tstl.Plugin {
       getClassNameAssignStatementIndex(result);
 
     const className = getClassName(declaration, context);
-
-    // add `__PW__ClassPatch(className)`
-    if (classNameAssignStatementIndex > -1) {
-      // create `__PW__ClassPatch(className)` statement
-      const pwClassPatchStatement = transformSimpleLibFunction(
-        libFeatures,
-        `__PW__ClassPatch`,
-        [className]
-      );
-      // add after `ClassName.name = className`
-      result.splice(
-        classNameAssignStatementIndex + 1,
-        0,
-        pwClassPatchStatement
-      );
-    }
 
     // handle class extends
     const extendedType = getExtendedType(context, declaration);
@@ -425,14 +512,16 @@ class PipeWrenchPlugin implements tstl.Plugin {
           `__PW__BaseClassExtends`,
           [className]
         );
-        // add after __PW__ClassPatch
+        // add after `ClassName.name = className`
         result.splice(
-          classNameAssignStatementIndex + 2,
+          classNameAssignStatementIndex + 1,
           0,
           pwBaseClassExtendsStatement
         );
       }
     }
+
+    this.replaceStatementClassNameFieldToType(result);
 
     return result;
   };
@@ -503,6 +592,222 @@ class PipeWrenchPlugin implements tstl.Plugin {
 
   isPzpwPatchImport(filePath: string) {
     return filePath.endsWith(`${sep}${pzpwPatchFileName}.lua`);
+  }
+
+  /**
+   * Collect dependencies,
+   * parse the path where the dependencies are located,
+   * search for corresponding packages based on the path,
+   * and find and collect pzpw configurations
+   */
+  collectImportModuleConfig(
+    program: ts.Program,
+    options: tstl.CompilerOptions,
+    emitHost: tstl.EmitHost,
+    result: tstl.ProcessedFile[]
+  ) {
+    const clonedResult = result.map((file) => ({
+      fileName: file.fileName,
+      code: file.code
+    }));
+
+    const resolutionContext = new ResolutionContext(
+      program,
+      options,
+      emitHost,
+      []
+    );
+
+    for (const file of clonedResult) {
+      resolutionContext.addAndResolveDependencies(file);
+    }
+
+    const allModuleMappings = resolutionContext.getModuleMappings();
+
+    const moduleMappings = allModuleMappings.filter(
+      (moduleMapping) => moduleMapping.requirePath !== '.'
+    );
+    const defaultModuleConfig = {
+      client: 'client',
+      server: 'server'
+    };
+    const importModuleConfig: ImportModuleConfig[] = moduleMappings
+      .map((moduleMapping): ImportModuleConfig | undefined => {
+        const packageRoot = findPackageRootInPath(moduleMapping.dependencyPath);
+        if (!packageRoot) {
+          return;
+        }
+        const config = this.getPipeWrenchLibraryConfig(packageRoot);
+        return {
+          ...moduleMapping,
+          packageRoot,
+          config: {
+            ...defaultModuleConfig,
+            ...config
+          }
+        };
+      })
+      .filter((config): config is ImportModuleConfig => !!config);
+
+    this.importModuleConfig = importModuleConfig;
+  }
+
+  /**
+   * Match the original path of the output file.
+   * If the original path matches the side,
+   * change the output path of the file
+   */
+  moveSideFiles({
+    side,
+    importModuleConfig,
+    file,
+    options
+  }: {
+    side: 'client' | 'server';
+    importModuleConfig: ImportModuleConfig;
+    file: TSTLEmitFile;
+    options: tstl.CompilerOptions;
+  }) {
+    const { packageRoot, config, requirePath } = importModuleConfig;
+    if (!config[side]) {
+      return;
+    }
+    const sidePrefix = normalizeSideConfigPath(config[side] as string);
+    // Extra check, cannot exceed packageRoot
+    const targetPos = join(packageRoot, sidePrefix);
+    if (!targetPos.startsWith(packageRoot)) {
+      console.warn(
+        `module ${requirePath} has wrong pzpw config: pzpw.${side} = ${config[side]}`
+      );
+      return;
+    }
+    const sideFilePath = join(packageRoot, `${sidePrefix}.lua`);
+    const sideDirPath = `${join(packageRoot, sidePrefix)}${path.sep}`;
+    if (
+      file.fileName === sideFilePath ||
+      file.fileName?.startsWith(sideDirPath)
+    ) {
+      const outDir = path.normalize(options.outDir as string);
+      const sideFileOutputPath = file.outputPath.replace(
+        `${outDir}${path.sep}lua_modules`,
+        `${outDir}${path.sep}${side}${path.sep}lua_modules`
+      );
+      file.outputPath = sideFileOutputPath;
+    }
+  }
+
+  moveServerAndClientFiles(
+    program: ts.Program,
+    options: tstl.CompilerOptions,
+    emitHost: tstl.EmitHost,
+    result: TSTLEmitFile[]
+  ) {
+    const importModuleConfigs = this.importModuleConfig;
+    result.forEach((file) => {
+      if (!file.fileName) {
+        return;
+      }
+      importModuleConfigs.forEach((importModuleConfig) => {
+        if (!file.fileName) {
+          return;
+        }
+        const { packageRoot } = importModuleConfig;
+        const inPackageRoot = file.fileName.startsWith(packageRoot);
+        if (!inPackageRoot) {
+          return;
+        }
+
+        this.moveSideFiles({
+          side: 'client',
+          importModuleConfig,
+          file,
+          options
+        });
+        this.moveSideFiles({
+          side: 'server',
+          importModuleConfig,
+          file,
+          options
+        });
+      });
+    });
+  }
+
+  getPipeWrenchLibraryConfig(packageRoot: string) {
+    try {
+      if (!pathExistsSync(packageRoot)) {
+        return;
+      }
+      const packageJsonPath = join(packageRoot, 'package.json');
+      if (!pathExistsSync(packageJsonPath)) {
+        return;
+      }
+      const packageJsonContent = readFileSync(packageJsonPath, 'utf-8');
+      const packageJson = JSON.parse(packageJsonContent) as {
+        pzpw?: PipeWrenchLibraryConfig;
+      };
+      return packageJson?.pzpw;
+    } catch (error) {
+      return;
+    }
+  }
+
+  /**
+   * replace `ClassName.name = className` to `ClassName.Type = className` in code
+   *
+   * Because in vanilla code, the name field is occupied
+   */
+  replaceClassNameFieldToType(content: string) {
+    return content.replaceAll('.name', '.Type');
+  }
+
+  /** replace AggregateError name field to Type */
+  patchAggregateError(content: string) {
+    return content.replace(
+      'name = "AggregateError"',
+      'Type = "AggregateError"'
+    );
+  }
+
+  /** Simultaneously compatible with both ts class and pz vanilla class */
+  patchInstanceOf(content: string) {
+    const lines = content.split('\n');
+    const instanceOfFunctionIndex = lines.findIndex((line) =>
+      line.includes(`function __TS__InstanceOf`)
+    );
+    if (instanceOfFunctionIndex === -1) {
+      return content;
+    }
+    const instanceOfPatchContent = `require "tests/classExtendEachOther/base/ISBaseObject"
+ISBaseObject[Symbol.hasInstance] = function(classTbl, obj)
+    if type(obj) == "table" then
+        local luaClass = obj.constructor or getmetatable(obj)
+        while luaClass ~= nil do
+            if luaClass == classTbl then
+                return true
+            end
+            luaClass = luaClass.____super or getmetatable(luaClass)
+        end
+    end
+    return false
+end`;
+    lines.splice(instanceOfFunctionIndex, 0, instanceOfPatchContent);
+    return lines.join('\n');
+  }
+
+  patchLuaBundleForPz(result: tstl.EmitFile[], outDir: string) {
+    const luaBundleOutputPath = join(outDir, 'lualib_bundle.lua');
+    const luaBundleFile = result.find(
+      (file) => file.outputPath === luaBundleOutputPath
+    );
+    if (!luaBundleFile) {
+      return;
+    }
+    let code = luaBundleFile.code;
+    code = this.replaceClassNameFieldToType(code);
+    code = this.patchAggregateError(code);
+    code = this.patchInstanceOf(code);
+    luaBundleFile.code = code;
   }
 }
 
