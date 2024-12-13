@@ -769,6 +769,32 @@ class PipeWrenchPlugin implements tstl.Plugin {
     );
   }
 
+  /** Simultaneously compatible with both ts class and pz vanilla class */
+  patchInstanceOf(content: string) {
+    const lines = content.split('\n');
+    const instanceOfFunctionIndex = lines.findIndex((line) =>
+      line.includes(`function __TS__InstanceOf`)
+    );
+    if (instanceOfFunctionIndex === -1) {
+      return content;
+    }
+    const instanceOfPatchContent = `require "tests/classExtendEachOther/base/ISBaseObject"
+ISBaseObject[Symbol.hasInstance] = function(classTbl, obj)
+    if type(obj) == "table" then
+        local luaClass = obj.constructor or getmetatable(obj)
+        while luaClass ~= nil do
+            if luaClass == classTbl then
+                return true
+            end
+            luaClass = luaClass.____super or getmetatable(luaClass)
+        end
+    end
+    return false
+end`;
+    lines.splice(instanceOfFunctionIndex, 0, instanceOfPatchContent);
+    return lines.join('\n');
+  }
+
   patchLuaBundleForPz(result: tstl.EmitFile[], outDir: string) {
     const luaBundleOutputPath = join(outDir, 'lualib_bundle.lua');
     const luaBundleFile = result.find(
@@ -780,6 +806,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
     let code = luaBundleFile.code;
     code = this.replaceClassNameFieldToType(code);
     code = this.patchAggregateError(code);
+    code = this.patchInstanceOf(code);
     luaBundleFile.code = code;
   }
 }

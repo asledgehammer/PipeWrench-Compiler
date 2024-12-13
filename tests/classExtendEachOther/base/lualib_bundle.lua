@@ -42,8 +42,64 @@ local function __TS__New(target, ...)
     return instance
 end
 
+local __TS__Symbol, Symbol
+do
+    local symbolMetatable = {
+        __tostring = function(self)
+            return ("Symbol(" .. (self.description or "")) .. ")"
+        end
+    }
+    function __TS__Symbol(description)
+        return setmetatable({ description = description }, symbolMetatable)
+    end
+
+    Symbol = {
+        asyncDispose = __TS__Symbol("Symbol.asyncDispose"),
+        dispose = __TS__Symbol("Symbol.dispose"),
+        iterator = __TS__Symbol("Symbol.iterator"),
+        hasInstance = __TS__Symbol("Symbol.hasInstance"),
+        species = __TS__Symbol("Symbol.species"),
+        toStringTag = __TS__Symbol("Symbol.toStringTag")
+    }
+end
+
+require "tests/classExtendEachOther/base/ISBaseObject"
+ISBaseObject[Symbol.hasInstance] = function(classTbl, obj)
+    if type(obj) == "table" then
+        local luaClass = obj.constructor or getmetatable(obj)
+        while luaClass ~= nil do
+            if luaClass == classTbl then
+                return true
+            end
+            luaClass = luaClass.____super or getmetatable(luaClass)
+        end
+    end
+    return false
+end
+local function __TS__InstanceOf(obj, classTbl)
+    if type(classTbl) ~= "table" then
+        error("Right-hand side of 'instanceof' is not an object", 0)
+    end
+    if classTbl[Symbol.hasInstance] ~= nil then
+        return not not classTbl[Symbol.hasInstance](classTbl, obj)
+    end
+    if type(obj) == "table" then
+        local luaClass = obj.constructor
+        while luaClass ~= nil do
+            if luaClass == classTbl then
+                return true
+            end
+            luaClass = luaClass.____super
+        end
+    end
+    return false
+end
+
 return {
     __TS__Class = __TS__Class,
     __TS__ClassExtends = __TS__ClassExtends,
     __TS__New = __TS__New,
+    __TS__InstanceOf = __TS__InstanceOf,
+    __TS__Symbol = __TS__Symbol,
+    Symbol = Symbol,
 }

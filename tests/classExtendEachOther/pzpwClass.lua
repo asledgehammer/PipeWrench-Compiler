@@ -20,18 +20,6 @@ function CustomPzpwClass.prototype.____constructor(self, x, y)
     self.y = y
 end
 
-function CustomPzpwClass.prototype.derive(self, type)
-    local __Cls = __TS__Class()
-    __Cls.name = type
-    __Cls.Type = type
-    __TS__ClassExtends(__Cls, self)
-    return __Cls
-end
-
-function CustomPzpwClass.prototype.new(self, ...)
-    return __TS__New(self, ...)
-end
-
 function CustomPzpwClass.prototype.addY(self, n)
     self.y = self.y + n
 end
