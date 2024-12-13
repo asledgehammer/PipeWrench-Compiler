@@ -30,7 +30,7 @@ import {
 } from 'typescript-to-lua/dist/CompilerOptions';
 import { findLuaRequires, LuaRequire } from './find-lua-requires';
 import { Plugin } from 'typescript-to-lua/dist/transpilation/plugins';
-import * as picomatch from 'picomatch';
+import picomatch from 'picomatch';
 
 const resolver = resolve.ResolverFactory.createResolver({
   extensions: ['.lua'],
@@ -46,11 +46,19 @@ interface ResolutionResult {
   diagnostics: ts.Diagnostic[];
 }
 
-class ResolutionContext {
+export interface ModuleMapping {
+  requirePath: string;
+  dependencyPath: string;
+  fileName: string;
+}
+
+export class ResolutionContext {
   private noResolvePaths: picomatch.Matcher[];
 
   public diagnostics: ts.Diagnostic[] = [];
   public resolvedFiles = new Map<string, ProcessedFile>();
+
+  private moduleMappings: ModuleMapping[] = [];
 
   constructor(
     public readonly program: ts.Program,
@@ -110,11 +118,18 @@ class ResolutionContext {
       return;
     }
 
-    const dependencyPath =
-      this.resolveDependencyPathsWithPlugins(file, required.requirePath) ??
-      this.resolveDependencyPath(file, required.requirePath);
+    const dependencyPath = this.resolveDependencyPath(
+      file,
+      required.requirePath
+    );
 
     if (!dependencyPath) return this.couldNotResolveImport(required, file);
+
+    this.moduleMappings.push({
+      requirePath: required.requirePath,
+      dependencyPath,
+      fileName: file.fileName
+    });
 
     if (this.options.tstlVerbose) {
       console.log(
@@ -122,86 +137,6 @@ class ResolutionContext {
           dependencyPath
         )}`
       );
-    }
-
-    this.processDependency(dependencyPath);
-    // Figure out resolved require path and dependency output path
-    if (shouldRewriteRequires(dependencyPath, this.program)) {
-      const resolvedRequire = getEmitPathRelativeToOutDir(
-        dependencyPath,
-        this.program
-      );
-      replaceRequireInCode(
-        file,
-        required,
-        resolvedRequire,
-        this.options.extension
-      );
-      replaceRequireInSourceMap(
-        file,
-        required,
-        resolvedRequire,
-        this.options.extension
-      );
-    }
-  }
-
-  private resolveDependencyPathsWithPlugins(
-    requiringFile: ProcessedFile,
-    dependency: string
-  ) {
-    const requiredFromLuaFile = requiringFile.fileName.endsWith('.lua');
-    for (const plugin of this.plugins) {
-      if (plugin.moduleResolution != null) {
-        const pluginResolvedPath = plugin.moduleResolution(
-          dependency,
-          requiringFile.fileName,
-          this.options,
-          this.emitHost
-        );
-        if (pluginResolvedPath !== undefined) {
-          // If resolved path is absolute no need to further resolve it
-          if (path.isAbsolute(pluginResolvedPath)) {
-            return pluginResolvedPath;
-          }
-
-          // If lua file is in node_module
-          if (
-            requiredFromLuaFile &&
-            isNodeModulesFile(requiringFile.fileName)
-          ) {
-            // If requiring file is in lua module, try to resolve sibling in that file first
-            const resolvedNodeModulesFile =
-              this.resolveLuaDependencyPathFromNodeModules(
-                requiringFile,
-                pluginResolvedPath
-              );
-            if (resolvedNodeModulesFile) {
-              if (this.options.tstlVerbose) {
-                console.log(
-                  `Resolved file path for module ${dependency} to path ${pluginResolvedPath} using plugin.`
-                );
-              }
-              return resolvedNodeModulesFile;
-            }
-          }
-
-          const resolvedPath = this.formatPathToFile(
-            pluginResolvedPath,
-            requiringFile
-          );
-          const fileFromPath = this.getFileFromPath(resolvedPath);
-
-          if (fileFromPath) {
-            if (this.options.tstlVerbose) {
-              console.log(
-                `Resolved file path for module ${dependency} to path ${pluginResolvedPath} using plugin.`
-              );
-            }
-            return fileFromPath;
-          }
-        }
-      }
     }
   }
 
@@ -444,6 +379,10 @@ class ResolutionContext {
         }
       }
     }
+  }
+
+  getModuleMappings() {
+    return this.moduleMappings;
   }
 }
 
