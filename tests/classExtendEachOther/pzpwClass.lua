@@ -3,15 +3,13 @@ local ____pipewrench_fixes = require('tests/classExtendEachOther/base/pipewrench
 local __TS__Class = ____lualib.__TS__Class
 local __TS__New = ____lualib.__TS__New
 local __TS__ClassExtends = ____lualib.__TS__ClassExtends
-local __PW__ClassPatch = ____pipewrench_fixes.__PW__ClassPatch
 local __PW__ClassExtendsPatch = ____pipewrench_fixes.__PW__ClassExtendsPatch
 
 local __PzpwClass = require('tests/classExtendEachOther/base/pzpwClass')
 local PzpwClass = __PzpwClass.PzpwClass
 
 local CustomPzpwClass = __TS__Class()
-CustomPzpwClass.name = "CustomPzpwClass"
-__PW__ClassPatch(CustomPzpwClass)
+CustomPzpwClass.Type = "CustomPzpwClass"
 
 __PW__ClassExtendsPatch(CustomPzpwClass, PzpwClass)
 __TS__ClassExtends(CustomPzpwClass, PzpwClass)

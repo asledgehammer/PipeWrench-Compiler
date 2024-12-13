@@ -20,9 +20,11 @@ import {
   isIdentifier,
   isStringLiteral,
   isTableIndexExpression,
+  type AssignmentStatement,
   type Expression,
   type FunctionVisitor,
   type Statement,
+  type TableIndexExpression,
   type TransformationContext
 } from 'typescript-to-lua';
 import {
@@ -320,6 +322,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
     if (!outDir) {
       return;
     }
+    this.patchLuaBundleForPz(result, options.outDir as string);
     this.moveServerAndClientFiles(
       program,
       options,
@@ -423,6 +426,28 @@ class PipeWrenchPlugin implements tstl.Plugin {
   }
 
   /**
+   * replace `ClassName.name = className` to `ClassName.Type = className` in statement
+   *
+   * Because in vanilla code, the name field is occupied
+   */
+  replaceStatementClassNameFieldToType(result: Statement[]) {
+    // find `ClassName.name = className`
+    const classNameAssignStatementIndex =
+      getClassNameAssignStatementIndex(result);
+    if (classNameAssignStatementIndex === -1) {
+      return;
+    }
+    const classNameAssignStatement = result[
+      classNameAssignStatementIndex
+    ] as AssignmentStatement;
+    const assignStatementLeft = classNameAssignStatement
+      .left[0] as TableIndexExpression;
+    const assignStatementLeftIndex =
+      assignStatementLeft.index as lua.StringLiteral;
+    assignStatementLeftIndex.value = 'Type';
+  }
+
+  /**
    * patch class like this:
    *
    * ```typescript
@@ -431,6 +456,7 @@ class PipeWrenchPlugin implements tstl.Plugin {
    * class B extends A {}
    * export default class D {}
    * ```
+   * and replace `ClassName.name = className` to `ClassName.Type = className` in statement
    *
    * but notice, this example may has problem because it is anonymous,
    * and its name and Type is 'default', may same to other classes
@@ -455,22 +481,6 @@ class PipeWrenchPlugin implements tstl.Plugin {
       getClassNameAssignStatementIndex(result);
 
     const className = getClassName(declaration, context);
-
-    // add `__PW__ClassPatch(className)`
-    if (classNameAssignStatementIndex > -1) {
-      // create `__PW__ClassPatch(className)` statement
-      const pwClassPatchStatement = transformSimpleLibFunction(
-        libFeatures,
-        `__PW__ClassPatch`,
-        [className]
-      );
-      // add after `ClassName.name = className`
-      result.splice(
-        classNameAssignStatementIndex + 1,
-        0,
-        pwClassPatchStatement
-      );
-    }
 
     // handle class extends
     const extendedType = getExtendedType(context, declaration);
@@ -502,14 +512,16 @@ class PipeWrenchPlugin implements tstl.Plugin {
           `__PW__BaseClassExtends`,
           [className]
         );
-        // add after __PW__ClassPatch
+        // add after `ClassName.name = className`
         result.splice(
-          classNameAssignStatementIndex + 2,
+          classNameAssignStatementIndex + 1,
           0,
           pwBaseClassExtendsStatement
         );
       }
     }
+
+    this.replaceStatementClassNameFieldToType(result);
 
     return result;
   };
@@ -738,6 +750,37 @@ class PipeWrenchPlugin implements tstl.Plugin {
     } catch (error) {
       return;
     }
+  }
+
+  /**
+   * replace `ClassName.name = className` to `ClassName.Type = className` in code
+   *
+   * Because in vanilla code, the name field is occupied
+   */
+  replaceClassNameFieldToType(content: string) {
+    return content.replaceAll('.name', '.Type');
+  }
+
+  /** replace AggregateError name field to Type */
+  patchAggregateError(content: string) {
+    return content.replace(
+      'name = "AggregateError"',
+      'Type = "AggregateError"'
+    );
+  }
+
+  patchLuaBundleForPz(result: tstl.EmitFile[], outDir: string) {
+    const luaBundleOutputPath = join(outDir, 'lualib_bundle.lua');
+    const luaBundleFile = result.find(
+      (file) => file.outputPath === luaBundleOutputPath
+    );
+    if (!luaBundleFile) {
+      return;
+    }
+    let code = luaBundleFile.code;
+    code = this.replaceClassNameFieldToType(code);
+    code = this.patchAggregateError(code);
+    luaBundleFile.code = code;
   }
 }
 

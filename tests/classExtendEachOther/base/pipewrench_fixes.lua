@@ -12,7 +12,6 @@ local function __PW__ClassExtendsPatch(target, BaseClass)
         BaseClass.prototype = BaseClass
         BaseClass.prototype.__index = BaseClass.prototype
         prototype.constructor = BaseClass
-        BaseClass.name = BaseClass.Type
         prototype.____constructor = function(self, ...)
             local o = self:new(...)
             -- copy fields from pz instance
@@ -25,7 +24,6 @@ end
 
 local function derive(self, type)
     local __Cls = __TS__Class()
-    __Cls.name = type
     __Cls.Type = type
 
     __PW__ClassExtendsPatch(__Cls, self)
@@ -39,16 +37,14 @@ end
 
 -- top level base class, like Object class in js or ISBaseObject class in pz
 local __PW__BaseClass = __TS__Class()
-__PW__BaseClass.name = '__PW__BaseClass'
-__PW__BaseClass.Type = __PW__BaseClass.name
+__PW__BaseClass.Type = '__PW__BaseClass'
 __PW__BaseClass.prototype.derive = derive
 __PW__BaseClass.prototype.new = new
 __PW__BaseClass.prototype.____constructor = function(self, ...) end
 
 -- insert after ts class name set
-local function __PW__ClassPatch(cls)
-    cls.Type = cls.name
-end
+---@deprecated no longer needed
+local function __PW__ClassPatch(cls) end
 
 -- add
 local function __PW__BaseClassExtends(cls)
