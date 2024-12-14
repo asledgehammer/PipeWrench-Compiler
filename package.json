@@ -19,8 +19,7 @@
     "check": "prettier --check . && eslint ."
   },
   "files": [
-    "dist/index.js",
-    "dist/config.js",
+    "dist",
     "lua/pipewrench_fixes.lua"
   ],
   "exports": "./dist/index.js",
