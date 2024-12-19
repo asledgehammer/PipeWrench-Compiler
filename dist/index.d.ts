@@ -1,6 +1,6 @@
 import * as ts from 'typescript';
 import * as tstl from 'typescript-to-lua';
-import { type FunctionVisitor, type Statement, type TransformationContext } from 'typescript-to-lua';
+import { type Expression, type FunctionVisitor, type Statement, type TransformationContext } from 'typescript-to-lua';
 import type { ClassLikeDeclaration } from 'typescript';
 import type { OneToManyVisitorResult } from 'typescript-to-lua/dist/transformation/utils/lua-ast';
 import { ModuleMapping } from './moduleResolve';
@@ -13,7 +13,7 @@ interface PipeWrenchLibraryConfig {
  * when CompilerOptions.luaBundle === undefined && CompilerOptions.luaBundleEntry === undefined,
  * fileName is exist
  */
-declare type TSTLEmitFile = tstl.EmitFile & {
+type TSTLEmitFile = tstl.EmitFile & {
     fileName?: string;
 };
 interface ImportModuleConfig extends ModuleMapping {
@@ -30,6 +30,7 @@ declare class PipeWrenchPlugin implements tstl.Plugin {
     beforeTransform(program: ts.Program, options: tstl.CompilerOptions): void;
     afterPrint(program: ts.Program, options: tstl.CompilerOptions, emitHost: tstl.EmitHost, result: tstl.ProcessedFile[]): void;
     beforeEmit(program: ts.Program, options: tstl.CompilerOptions, emitHost: tstl.EmitHost, result: tstl.EmitFile[]): void;
+    afterEmit(program: ts.Program, options: tstl.CompilerOptions): void;
     validatePzpwConfig(): void;
     moduleResolution(moduleIdentifier: string, requiringFile: string, options: tstl.CompilerOptions, emitHost: tstl.EmitHost): "pipewrench_fixes" | undefined;
     /**
