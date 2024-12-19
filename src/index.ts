@@ -329,8 +329,19 @@ class PipeWrenchPlugin implements tstl.Plugin {
       emitHost,
       result as TSTLEmitFile[]
     );
-    const modSubDir = join(outDir, this.config.modInfo.id);
+    const getModSubDir = (outDir: string, config: PipeWrenchConfig) => {
+      const targetVersion = config.compilerOptions?.targetVersion;
+      if (targetVersion === '42-unstable') {
+        return join(outDir, config.modInfo.id, '42');
+      }
+      return join(outDir, config.modInfo.id);
+    };
+    const modSubDir = getModSubDir(outDir, this.config);
     ensureDirSync(modSubDir);
+    const targetVersion = this.config.compilerOptions?.targetVersion;
+    if (targetVersion === '42-unstable' || targetVersion === '41&42-unstable') {
+      ensureDirSync(join(outDir, this.config.modInfo.id, 'common'));
+    }
 
     const copyDirs = [
       {
@@ -382,6 +393,27 @@ class PipeWrenchPlugin implements tstl.Plugin {
     });
   }
 
+  afterEmit(program: ts.Program, options: tstl.CompilerOptions) {
+    if (!options.outDir) {
+      return;
+    }
+    const modSubDir = join(options.outDir, this.config.modInfo.id);
+    const targetVersion = this.config.compilerOptions?.targetVersion;
+    if (targetVersion === '41&42-unstable') {
+      const sourceDir = join(modSubDir, '42', 'media');
+      const destDir = join(modSubDir, 'media');
+      copyFileSync(
+        join(modSubDir, '42', 'mod.info'),
+        join(modSubDir, 'mod.info')
+      );
+      copyFileSync(
+        join(modSubDir, '42', this.config.modInfo.poster),
+        join(modSubDir, this.config.modInfo.poster)
+      );
+      copyMake(sourceDir, destDir);
+    }
+  }
+
   validatePzpwConfig() {
     // provide json schemas for pipewrench.json?
     const validateConfig = ajv.compile(PipeWrenchConfigSchema);
@@ -392,8 +424,11 @@ class PipeWrenchPlugin implements tstl.Plugin {
       this.config = rawConfig;
       console.log('Configuration:', this.config);
     } else {
-      console.error(validateConfig.errors);
-      throw 'Error parsing pipewrench.json';
+      throw `Error parsing pipewrench.json: \nerrors: ${JSON.stringify(
+        validateConfig.errors,
+        null,
+        2
+      )}`;
     }
   }
 
