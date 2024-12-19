@@ -18,7 +18,19 @@ exports.PipeWrenchConfigSchema = {
         modelsDir: { type: 'string' },
         texturesDir: { type: 'string' },
         soundDir: { type: 'string' },
-        scriptsDir: { type: 'string' }
+        scriptsDir: { type: 'string' },
+        compilerOptions: {
+            type: 'object',
+            properties: {
+                targetVersion: {
+                    type: 'string',
+                    default: '41',
+                    nullable: true,
+                    enum: ['41', '42-unstable', '41&42-unstable']
+                }
+            },
+            nullable: true
+        }
     },
     required: ['modInfo', 'modelsDir', 'texturesDir', 'soundDir', 'scriptsDir'],
     additionalProperties: false

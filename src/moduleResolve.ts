@@ -11,7 +11,6 @@ import {
 } from 'typescript-to-lua/dist/transpilation/utils';
 import { SourceNode } from 'source-map';
 import {
-  getEmitPathRelativeToOutDir,
   getProjectRoot,
   getSourceDir
 } from 'typescript-to-lua/dist/transpilation/transpiler';

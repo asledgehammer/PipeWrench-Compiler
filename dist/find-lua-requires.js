@@ -2,11 +2,10 @@
 // copy and change from typescript-to-lua v1.28.1
 // src/transpilation/find-lua-requires.ts
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.findLuaRequires = void 0;
+exports.findLuaRequires = findLuaRequires;
 function findLuaRequires(lua) {
     return findRequire(lua, 0);
 }
-exports.findLuaRequires = findLuaRequires;
 function findRequire(lua, offset) {
     const result = [];
     while (offset < lua.length) {
