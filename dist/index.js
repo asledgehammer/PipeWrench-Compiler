@@ -240,7 +240,7 @@ class PipeWrenchPlugin {
         this.moveServerAndClientFiles(program, options, emitHost, result);
         const getModSubDir = (outDir, config) => {
             const targetVersion = config.compilerOptions?.targetVersion;
-            if (targetVersion === '42-unstable') {
+            if (targetVersion === '42-unstable' || targetVersion === '41&42-unstable') {
                 return (0, node_path_1.join)(outDir, config.modInfo.id, '42');
             }
             return (0, node_path_1.join)(outDir, config.modInfo.id);
