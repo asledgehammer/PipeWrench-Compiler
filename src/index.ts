@@ -331,7 +331,10 @@ class PipeWrenchPlugin implements tstl.Plugin {
     );
     const getModSubDir = (outDir: string, config: PipeWrenchConfig) => {
       const targetVersion = config.compilerOptions?.targetVersion;
-      if (targetVersion === '42-unstable') {
+      if (
+        targetVersion === '42-unstable' ||
+        targetVersion === '41&42-unstable'
+      ) {
         return join(outDir, config.modInfo.id, '42');
       }
       return join(outDir, config.modInfo.id);
