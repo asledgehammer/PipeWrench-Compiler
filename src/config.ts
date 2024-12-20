@@ -8,13 +8,22 @@ export interface ModInfo {
   url: string;
 }
 
+/** optional values: '41', '42-unstable', '41&42-unstable', default value is '41' */
+export type CompilerTargetVersion = '41' | '42-unstable' | '41&42-unstable';
+
+export interface PipeWrenchCompilerOptions {
+  targetVersion?: CompilerTargetVersion;
+}
+
 export interface PipeWrenchConfig {
   modInfo: ModInfo;
   modelsDir: string;
   texturesDir: string;
   soundDir: string;
   scriptsDir: string;
+  compilerOptions?: PipeWrenchCompilerOptions;
 }
+
 export const PipeWrenchConfigSchema: JSONSchemaType<PipeWrenchConfig> = {
   type: 'object',
   properties: {
@@ -32,7 +41,19 @@ export const PipeWrenchConfigSchema: JSONSchemaType<PipeWrenchConfig> = {
     modelsDir: { type: 'string' },
     texturesDir: { type: 'string' },
     soundDir: { type: 'string' },
-    scriptsDir: { type: 'string' }
+    scriptsDir: { type: 'string' },
+    compilerOptions: {
+      type: 'object',
+      properties: {
+        targetVersion: {
+          type: 'string',
+          default: '41',
+          nullable: true,
+          enum: ['41', '42-unstable', '41&42-unstable']
+        }
+      },
+      nullable: true
+    }
   },
   required: ['modInfo', 'modelsDir', 'texturesDir', 'soundDir', 'scriptsDir'],
   additionalProperties: false
